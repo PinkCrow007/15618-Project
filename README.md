@@ -4,7 +4,8 @@
 **Team Members:** Mingqi Lu & Jiaying Li  
 **URL:** https://github.com/PinkCrow007/15618-Project
 
-
+## **REPORTS**
+[Project Proposal](https://github.com/PinkCrow007/15618-Project/blob/main/ProjectProposal.md)
 
 ## **SUMMARY**
 We plan to extend a single-GPU microscopic traffic simulator into a **multi-GPU parallel system** capable of simulating significantly larger road networks. Our work focuses on spatially partitioning the simulation across two GPUs and designing efficient GPU-GPU communication to synchronize vehicle states.
