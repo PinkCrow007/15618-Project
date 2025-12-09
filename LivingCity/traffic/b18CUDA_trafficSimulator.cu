@@ -16,6 +16,7 @@
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 #include <thrust/copy.h>
+#include <thrust/system/cuda/execution_policy.h>
 #include "b18TrafficPerson.h"
 #include "b18EdgeData.h"
 #include <vector>
@@ -118,6 +119,7 @@ uint **laneToUpdateIndex_d = nullptr;
 uint **laneToUpdateValues_d = nullptr;
 LC::B18IntersectionData **intersections_d  = nullptr;
 uchar **trafficLights_d  = nullptr;
+cudaStream_t* streams = nullptr;  // Global streams, created once
 // std::map<int,std::vector<LC::B18TrafficVehicle> >personToCopy;
 // std::map<int,std::vector<int> >personToRemove;//eg: 1->{1,3,5},2->{9},3->{} (gpuIndex->personList)
 
@@ -198,9 +200,19 @@ void b18InitCUDA_n(
   trafficLights_d = new uchar*[ngpus];
   vehicles_vec = new thrust::device_vector<LC::B18TrafficVehicle>*[ngpus];
 
-  cudaStream_t *streams = new cudaStream_t[ngpus];
+  // Create global streams (one per GPU, reused every frame)
+  if (firstInitialization) {
+    streams = new cudaStream_t[ngpus];
+    for(int i = 0; i < ngpus; i++){
+      cudaSetDevice(i);  // MUST set device before creating stream
+      cudaStreamCreate(&streams[i]);
+    }
+  }
+  
+  // Create temporary streams for initialization
+  cudaStream_t *init_streams = new cudaStream_t[ngpus];
   for(int i = 0; i < ngpus; i++){
-      cudaStreamCreate( &streams[i]);
+      cudaStreamCreate(&init_streams[i]);
   }
   //printf(">>b18InitCUDA firstInitialization %s\n", (firstInitialization?"INIT":"ALREADY INIT"));
   //printMemoryUsage();
@@ -261,7 +273,7 @@ void b18InitCUDA_n(
       indexPathVec_d_size = indexPathVec_n[i].size();
       if (firstInitialization) {
         gpuErrchk(cudaMalloc((void **) &indexPathVec_d[i], sizeIn));   // Allocate array on device
-        gpuErrchk(cudaMemcpyAsync(indexPathVec_d[i], indexPathVec_n[i].data(), sizeIn, cudaMemcpyHostToDevice, streams[i]));
+        gpuErrchk(cudaMemcpyAsync(indexPathVec_d[i], indexPathVec_n[i].data(), sizeIn, cudaMemcpyHostToDevice, init_streams[i]));
       }
     }
   }
@@ -273,7 +285,7 @@ void b18InitCUDA_n(
       edgesData_d_size[i] = edgesData_n[i].size();
       if (firstInitialization){
         gpuErrchk(cudaMalloc((void **) &edgesData_d[i], sizeD));   // Allocate array on device
-        gpuErrchk(cudaMemcpyAsync(edgesData_d[i], edgesData_n[i].data(), sizeD, cudaMemcpyHostToDevice, streams[i]));
+        gpuErrchk(cudaMemcpyAsync(edgesData_d[i], edgesData_n[i].data(), sizeD, cudaMemcpyHostToDevice, init_streams[i]));
       } 
     }
   }
@@ -286,7 +298,7 @@ void b18InitCUDA_n(
       if (firstInitialization) 
       {
         gpuErrchk(cudaMalloc((void **) &laneMap_d[i], sizeL));   // Allocate array on device
-        gpuErrchk(cudaMemcpyAsync(laneMap_d[i], laneMap_n[i].data(), sizeL, cudaMemcpyHostToDevice, streams[i]));
+        gpuErrchk(cudaMemcpyAsync(laneMap_d[i], laneMap_n[i].data(), sizeL, cudaMemcpyHostToDevice, init_streams[i]));
       }
       halfLaneMap_n[i] = laneMap_n[i].size() / 2;
     }    
@@ -298,7 +310,7 @@ void b18InitCUDA_n(
       size_t sizeI = intersections_n[i].size() * sizeof(LC::B18IntersectionData);
       if (firstInitialization){
         gpuErrchk(cudaMalloc((void **) &intersections_d[i], sizeI));   // Allocate array on device
-        gpuErrchk(cudaMemcpyAsync(intersections_d[i], intersections_n[i].data(), sizeI, cudaMemcpyHostToDevice, streams[i]));   
+        gpuErrchk(cudaMemcpyAsync(intersections_d[i], intersections_n[i].data(), sizeI, cudaMemcpyHostToDevice, init_streams[i]));   
 
       }
       
@@ -306,7 +318,7 @@ void b18InitCUDA_n(
       trafficLights_d_size[i] = trafficLights_n[i].size();
       if (firstInitialization) {
         gpuErrchk(cudaMalloc((void **) &trafficLights_d[i], sizeT));   // Allocate array on device
-        gpuErrchk(cudaMemcpyAsync(trafficLights_d[i], trafficLights_n[i].data(), sizeT, cudaMemcpyHostToDevice, streams[i]));
+        gpuErrchk(cudaMemcpyAsync(trafficLights_d[i], trafficLights_n[i].data(), sizeT, cudaMemcpyHostToDevice, init_streams[i]));
       }
     }
       // cudaSetDevice(0);
@@ -324,7 +336,7 @@ void b18InitCUDA_n(
         gpuErrchk(cudaMalloc((void **) &vertexIdToPar_d[i], vertexIdToPar.size()*sizeof(int)));   // Allocate array on device
         // gpuErrchk(cudaMemcpy(vertexIdToPar_d[i], vertexIdToPar.data(), vertexIdToPar.size()*sizeof(int), cudaMemcpyHostToDevice));
 
-        gpuErrchk(cudaMemcpyAsync(vertexIdToPar_d[i], vertexIdToPar.data(), vertexIdToPar.size()*sizeof(int), cudaMemcpyHostToDevice, streams[i]));
+        gpuErrchk(cudaMemcpyAsync(vertexIdToPar_d[i], vertexIdToPar.data(), vertexIdToPar.size()*sizeof(int), cudaMemcpyHostToDevice, init_streams[i]));
         gpuErrchk(cudaMalloc((void **) &vehicleToCopy_d[i], buffer_size*sizeof(uint)*2)); 
         gpuErrchk(cudaMalloc((void **) &vehicleToRemove_d[i], buffer_size*sizeof(uint))); 
         gpuErrchk(cudaMalloc((void **)&removeCursor_d[i], sizeof(uint))); 
@@ -478,15 +490,15 @@ void b18InitCUDA_n(
   }
   for(int i = 0; i < ngpus; i++){
     cudaSetDevice(i);
-    gpuErrchk(cudaStreamSynchronize(streams[i]));
-    gpuErrchk(cudaStreamDestroy(streams[i]));
+    gpuErrchk(cudaStreamSynchronize(init_streams[i]));
+    gpuErrchk(cudaStreamDestroy(init_streams[i]));
     printMemoryUsage();
 
   }
       
   cudaError_t error = cudaGetLastError();
   printf("CUDA error: %s\n", cudaGetErrorString(error));
-  delete[] streams;
+  delete[] init_streams;
 }
 
 void b18InitCUDA(
@@ -746,6 +758,16 @@ void b18FinishCUDA(void){
     cudaFree(trafficLights_d);
     cudaFree(accSpeedPerLinePerTimeInterval_d);
     cudaFree(numVehPerLinePerTimeInterval_d);
+  }
+  
+  // Destroy global streams
+  if (streams != nullptr) {
+    for(int i = 0; i < ngpus; i++){
+      cudaSetDevice(i);
+      cudaStreamDestroy(streams[i]);
+    }
+    delete[] streams;
+    streams = nullptr;
   }
   
   // Free pinned memory buffers
@@ -2098,32 +2120,70 @@ struct is_in_indices {
     }
 };
 // Modified to accept raw pointer from pinned memory - no extra copy needed!
-void copy_task(int i, int j, int* indicesToCopy, int count, int targetLoc){
+// Async version with stream - step by step optimization
+void copy_task_async(int i, int j, int* indicesToCopy, int count, int targetLoc, cudaStream_t stream){
+  if(count == 0) return;
+  
+  std::sort(indicesToCopy, indicesToCopy + count);
+  gpuErrchk(cudaSetDevice(i));
+  
+  // Use pre-allocated buffers
+  thrust::device_vector<int>& indicesToCopy_d = *buffer_copy_indices[i];
+  thrust::device_vector<LC::B18TrafficVehicle>& output = *buffer_copy_output[i];
+  
+  // Resize
+  indicesToCopy_d.resize(count);
+  output.resize(count);
+  
+  // Step 1: Async H2D copy (pinned memory -> device)
+  gpuErrchk(cudaMemcpyAsync(
+    thrust::raw_pointer_cast(indicesToCopy_d.data()), 
+    indicesToCopy, 
+    count * sizeof(int), 
+    cudaMemcpyHostToDevice, 
+    stream
+  ));
+  
+  // Step 2: Async gather (use stream-based thrust policy)
+  auto policy = thrust::cuda::par.on(stream);
+  auto perm_begin = thrust::make_permutation_iterator(vehicles_vec[i]->begin(), indicesToCopy_d.begin());
+  thrust::copy(policy, perm_begin, perm_begin + count, output.begin());
+  
+  // Step 3: Async P2P transfer (Device i -> Device j)
+  // Ensure we're still on device i (thrust operations might have changed it)
+  int currentDev;
+  cudaGetDevice(&currentDev);
+  if (currentDev != i) {
+    gpuErrchk(cudaSetDevice(i));
+  }
+  
+  LC::B18TrafficVehicle* target_ptr = thrust::raw_pointer_cast(vehicles_vec[j]->data()) + targetLoc;
+  LC::B18TrafficVehicle* source_ptr = thrust::raw_pointer_cast(output.data());
+  
+  // Use async P2P - queued in stream, no CPU blocking
+  gpuErrchk(cudaMemcpyPeerAsync(
+    target_ptr, j,  // destination
+    source_ptr, i,  // source
+    count * sizeof(LC::B18TrafficVehicle),
+    stream  // stream on device i
+  ));
+  
+  // Function returns immediately - all operations queued in stream
+}
+
+// Keep old synchronous version as backup
+void copy_task_sync(int i, int j, int* indicesToCopy, int count, int targetLoc){
   if(count>0){
   std::sort(indicesToCopy, indicesToCopy + count);
   gpuErrchk(cudaSetDevice(i));
   
-  // Use pre-allocated buffers instead of creating new ones
   thrust::device_vector<int>& indicesToCopy_d = *buffer_copy_indices[i];
   thrust::device_vector<LC::B18TrafficVehicle>& output = *buffer_copy_output[i];
   
-  // Resize to needed size (if within capacity, this is zero-cost)
-  size_t needed_size = count;
-  if (needed_size > indicesToCopy_d.capacity()) {
-    // Only resize if we exceed capacity (rare case)
-    printf("WARNING: GPU %d copy_task buffer resize from %zu to %zu\n", 
-           i, indicesToCopy_d.capacity(), needed_size);
-    indicesToCopy_d.resize(needed_size);
-    output.resize(needed_size);
-  }
-  
-  // Copy data to device buffer (resize to logical size without reallocation)
-  indicesToCopy_d.resize(needed_size);
-  output.resize(needed_size);
-  // Direct copy from pinned memory to device - FAST!
+  indicesToCopy_d.resize(count);
+  output.resize(count);
   thrust::copy(indicesToCopy, indicesToCopy + count, indicesToCopy_d.begin());
   
-  // thrust::copy_if(thrust::device, vehicles_vec[i]->begin(), vehicles_vec[i]->end(), thrust::counting_iterator<int>(0), output.begin(), is_in_indices(thrust::raw_pointer_cast(indicesToCopy_d.data()), indicesToCopy_d.size()));
   auto perm_begin = thrust::make_permutation_iterator(vehicles_vec[i]->begin(), indicesToCopy_d.begin());
   auto perm_end = thrust::make_permutation_iterator(vehicles_vec[i]->begin(), indicesToCopy_d.end());
   thrust::copy(perm_begin, perm_end, output.begin());
@@ -2134,71 +2194,52 @@ void copy_task(int i, int j, int* indicesToCopy, int count, int targetLoc){
 
 }
 }
-// Modified to accept raw pointer from pinned memory - no extra copy needed!
-void remove_task(int i, int* ToRemove, int removeCount) {
+// Async version: only GPU operations, CPU logic moved to main loop
+void remove_task_async(int i, int* indices_from, int* indices_to, int count, int removeCount, cudaStream_t stream) {
+    if (removeCount == 0) return;
+    
     gpuErrchk(cudaSetDevice(i));
-    if(removeCount>0){
-        // Assert that ToRemove has no duplicates
-        assert(std::adjacent_find(ToRemove, ToRemove + removeCount) == ToRemove + removeCount);
-        std::sort(ToRemove, ToRemove + removeCount);
-        // Assert that the indices in ToRemove are within bounds
-        assert(ToRemove[removeCount-1] < vehicles_vec[i]->size());
-        
-        // Use pinned memory buffers for indices_from and indices_to
-        int* indices_from = h_indices_from[i];
-        int* indices_to = h_indices_to[i];
-        int count = 0;
-        
-        // delete elements by move the last element to absence
-        int currentIndOfIndices=0;
-        for(int j=vehicles_vec[i]->size()-1;j>=0;j--){
-          if(currentIndOfIndices>=removeCount ||j<ToRemove[currentIndOfIndices])break;
-          // if j not in indices
-          if(std::find(ToRemove, ToRemove + removeCount, j) == ToRemove + removeCount){
-            indices_to[count] = ToRemove[currentIndOfIndices];
-            indices_from[count] = j;
-            count++;
-            currentIndOfIndices++;
-          }
-        }
-        
-        if(count>0){
-          // Use pre-allocated device buffers
-          thrust::device_vector<int>& indices_from_d = *buffer_indices_from[i];
-          thrust::device_vector<int>& indices_to_d = *buffer_indices_to[i];
-          thrust::device_vector<LC::B18TrafficVehicle>& toMove = *buffer_vehicles_temp[i];
-          
-          size_t needed_size = count;
-          
-          // Only reallocate if we exceed capacity (should be rare)
-          if (needed_size > indices_from_d.capacity()) {
-            printf("WARNING: GPU %d remove_task buffer resize from %zu to %zu\n", 
-                   i, indices_from_d.capacity(), needed_size);
-            indices_from_d.resize(needed_size);
-            indices_to_d.resize(needed_size);
-            toMove.resize(needed_size);
-          }
-          
-          // Resize to logical size (zero-cost if within capacity)
-          indices_from_d.resize(needed_size);
-          indices_to_d.resize(needed_size);
-          toMove.resize(needed_size);
-          
-          // Copy from pinned memory to device buffers (fast!)
-          thrust::copy(indices_from, indices_from + count, indices_from_d.begin());
-          thrust::copy(indices_to, indices_to + count, indices_to_d.begin());
-          
-          //get last elements to be removed and their target indices
-          auto perm_begin = thrust::make_permutation_iterator(vehicles_vec[i]->begin(), indices_from_d.begin());
-          auto perm_end = thrust::make_permutation_iterator(vehicles_vec[i]->begin(), indices_from_d.end());
-          thrust::copy(perm_begin, perm_end, toMove.begin());
-          //move
-          thrust::scatter(toMove.begin(), toMove.end(), indices_to_d.begin(), vehicles_vec[i]->begin());
-        }
-        // resize
-        vehicles_vec[i]->resize(vehicles_vec[i]->size() - removeCount);
-
-      }
+    
+    if(count > 0){
+      // Use pre-allocated device buffers
+      thrust::device_vector<int>& indices_from_d = *buffer_indices_from[i];
+      thrust::device_vector<int>& indices_to_d = *buffer_indices_to[i];
+      thrust::device_vector<LC::B18TrafficVehicle>& toMove = *buffer_vehicles_temp[i];
+      
+      // Resize
+      indices_from_d.resize(count);
+      indices_to_d.resize(count);
+      toMove.resize(count);
+      
+      // Step 1: Async H2D (pinned memory -> device)
+      gpuErrchk(cudaMemcpyAsync(
+          thrust::raw_pointer_cast(indices_from_d.data()), 
+          indices_from, 
+          count * sizeof(int), 
+          cudaMemcpyHostToDevice, 
+          stream
+      ));
+      gpuErrchk(cudaMemcpyAsync(
+          thrust::raw_pointer_cast(indices_to_d.data()), 
+          indices_to, 
+          count * sizeof(int), 
+          cudaMemcpyHostToDevice, 
+          stream
+      ));
+      
+      // Step 2: Async Gather and Scatter using stream
+      auto policy = thrust::cuda::par.on(stream);
+      
+      // Gather elements to move
+      auto perm_begin = thrust::make_permutation_iterator(vehicles_vec[i]->begin(), indices_from_d.begin());
+      thrust::copy(policy, perm_begin, perm_begin + count, toMove.begin());
+      
+      // Scatter to new positions
+      thrust::scatter(policy, toMove.begin(), toMove.end(), indices_to_d.begin(), vehicles_vec[i]->begin());
+    }
+    
+    // Step 3: Resize (metadata only, safe to do immediately)
+    vehicles_vec[i]->resize(vehicles_vec[i]->size() - removeCount);
 }
 __global__ void updateLaneMap(uchar *laneMap, uint size, uint laneMap_d_size, uint *updateLaneIndex, uint *updateLaneValues) {
     int index = threadIdx.x + blockIdx.x * blockDim.x;
@@ -2262,7 +2303,8 @@ void b18SimulateTrafficCUDA(float currentTime,
     int numPeople_gpu = vehicles_vec[i]->size();
     LC::B18TrafficVehicle* vehicles_ptr = thrust::raw_pointer_cast((*vehicles_vec[i]).data());
     if(numPeople_gpu>0){
-      kernel_trafficSimulation <<<  ceil(numPeople_gpu/ 384.0f), threadsPerBlock>> >
+      // Launch kernel in stream - GPU 0 and GPU 1 can run in parallel!
+      kernel_trafficSimulation <<<  ceil(numPeople_gpu/ 384.0f), threadsPerBlock, 0, streams[i]>> >
       (i,numPeople_gpu, currentTime, mapToReadShift_n[i],
       mapToWriteShift_n[i],vehicles_ptr, indexPathVec_d[i], indexPathVec_d_size,
       edgesData_d[i], edgesData_d_size[i], laneMap_d[i], laneMap_d_size[i], laneIdMapper_d[i],
@@ -2277,9 +2319,10 @@ void b18SimulateTrafficCUDA(float currentTime,
     // std::time_t t = std::chrono::system_clock::to_time_t(realTime);
     // outFile <<currentTime<<","<< std::put_time(std::localtime(&t), "%Y-%m-%d %H:%M:%S") << std::endl;
     // outFile.close();
+    
     for(int i = 0; i < ngpus; i++){
-    cudaSetDevice(i);
-    gpuErrchk(cudaDeviceSynchronize());
+      cudaSetDevice(i);
+      gpuErrchk(cudaStreamSynchronize(streams[i]));  // Only sync this stream, not entire device
     }
     std::vector<int> currentLoc(ngpus,0);//current target copy beginning index of vehicles_vec
     int commu_times=0;
@@ -2373,30 +2416,63 @@ void b18SimulateTrafficCUDA(float currentTime,
       vehicles_vec[i]->resize(currentLoc[i]);   
     }
     
-    // Directly use pinned memory - NO extra CPU copy needed!
-    std::vector<std::thread> copy_threads;
-    for (int i = 0; i < ngpus; ++i)
-    for (int j = 0; j < ngpus; ++j) {
-      int pair_idx = i*ngpus+j;
-      if(i!=j && targetLoc[pair_idx]!=-1 && indicesToCopyCount[pair_idx]>0) {
-        // Pass pinned memory pointer directly - zero-copy on CPU side!
-        copy_threads.emplace_back(copy_task, i, j, h_indicesToCopy[pair_idx], indicesToCopyCount[pair_idx], targetLoc[pair_idx]); 
+    // Use async copy with streams - NO std::thread needed!
+    for (int i = 0; i < ngpus; ++i) {
+      for (int j = 0; j < ngpus; ++j) {
+        int pair_idx = i*ngpus+j;
+        if(i!=j && targetLoc[pair_idx]!=-1 && indicesToCopyCount[pair_idx]>0) {
+          // Launch async copy - function returns immediately, GPU works in background
+          copy_task_async(i, j, h_indicesToCopy[pair_idx], indicesToCopyCount[pair_idx], targetLoc[pair_idx], streams[i]); 
+        }
       }
-    }
-    for (auto& t : copy_threads) {
-        t.join();
     }
     
-    // Directly use pinned memory for remove operations
-    std::vector<std::thread> threads;
-    for (int i = 0; i < ngpus; ++i) {
-      if(h_removeCursor[i]>0) {
-        // Pass pinned memory pointer directly - zero-copy on CPU side!
-        threads.emplace_back(remove_task, i, h_ToRemove[i], h_removeCursor[i]); 
-      }
+    // Wait for all copy operations to complete
+    for (int i = 0; i < ngpus; i++) {
+      gpuErrchk(cudaSetDevice(i));
+      gpuErrchk(cudaStreamSynchronize(streams[i]));
     }
-    for (auto& t : threads) {
-        t.join();
+    
+    // Use async remove with streams - CPU computes indices, GPU executes asynchronously
+    for (int i = 0; i < ngpus; ++i) {
+      int removeCount = h_removeCursor[i];
+      if(removeCount == 0) continue;
+      
+      // CPU computation: calculate which elements to move (uses pinned memory)
+      int* indices_from = h_indices_from[i];
+      int* indices_to = h_indices_to[i];
+      int* to_remove_list = h_ToRemove[i];
+      
+      // Sort and validate
+      std::sort(to_remove_list, to_remove_list + removeCount);
+      assert(std::adjacent_find(to_remove_list, to_remove_list + removeCount) == to_remove_list + removeCount);
+      assert(to_remove_list[removeCount-1] < vehicles_vec[i]->size());
+      
+      int count = 0;
+      int currentIndOfIndices = 0;
+      int vecSize = vehicles_vec[i]->size();
+      
+      // Calculate indices (optimized with binary_search)
+      for(int j = vecSize - 1; j >= 0; j--){
+        if(currentIndOfIndices >= removeCount || j < to_remove_list[currentIndOfIndices]) break;
+        
+        // Check if j is in remove list
+        if(!std::binary_search(to_remove_list, to_remove_list + removeCount, j)){
+          indices_to[count] = to_remove_list[currentIndOfIndices];
+          indices_from[count] = j;
+          count++;
+          currentIndOfIndices++;
+        }
+      }
+      
+      // Launch async GPU operations - returns immediately!
+      remove_task_async(i, indices_from, indices_to, count, removeCount, streams[i]);
+    }
+    
+    // Wait for all remove operations to complete
+    for (int i = 0; i < ngpus; i++) {
+      gpuErrchk(cudaSetDevice(i));
+      gpuErrchk(cudaStreamSynchronize(streams[i]));
     }
     
   }
